@@ -30,6 +30,21 @@ Built-in providers:
 - `3bmeteo` -> `https://www.3bmeteo.com/meteo/{city}`
 - `wttr` -> `https://wttr.in/{city}?format=j1`
 
+### iCloud Calendar
+
+Path: `skills/icloud-calendar/SKILL.md`
+
+| Variable | Required | Default | Notes |
+| --- | --- | --- | --- |
+| `SKILL_ICLOUD_CAL_VDIRSYNCER_BIN` | no | `vdirsyncer` | vdirsyncer executable |
+| `SKILL_ICLOUD_CAL_KHAL_BIN` | no | `khal` | khal executable |
+| `SKILL_ICLOUD_CAL_VDIRSYNCER_CONFIG_PATH` | yes | none | vdirsyncer config file |
+| `SKILL_ICLOUD_CAL_KHAL_CONFIG_PATH` | yes | none | khal config file |
+| `SKILL_ICLOUD_CAL_PROFILE` | yes | none | vdirsyncer pair name |
+| `SKILL_ICLOUD_CAL_STORAGE_PATH` | for deletes | none | Local root of the vdirsyncer `filesystem` storage |
+
+The iCloud app-specific password belongs in the vdirsyncer config or a secret store, never in the repo.
+
 ## Notes
 
 - `JINA_API_KEY` and `TAVILY_API_KEY` are an intentional exception to the `SKILL_<NAME>_<FIELD>` convention because they are shared credentials that other tools may also use.
