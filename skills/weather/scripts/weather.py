@@ -6,6 +6,7 @@ import os
 import re
 import sys
 import time
+import unicodedata
 from datetime import datetime, timezone
 from typing import Any, Callable
 from urllib.parse import quote
@@ -16,9 +17,10 @@ BUILTIN_CUSTOM_URLS = {
 }
 DEFAULT_PROVIDER = "meteoam"
 DEFAULT_EXTRACTOR_ORDER = "jina,tavily"
-RETRY_COUNT = 3
-RETRY_DELAY = 5
-TIMEOUT = 30
+FALLBACK_PROVIDER = "wttr"
+RETRY_COUNT = 2
+RETRY_DELAY = 2
+TIMEOUT = 15
 
 
 def now_iso() -> str:
@@ -35,7 +37,13 @@ def provider_env_suffix(provider: str) -> str:
 
 
 def encode_city(city: str) -> str:
-    return quote(city.lower(), safe="")
+    ascii_city = (
+        unicodedata.normalize("NFKD", city)
+        .encode("ascii", "ignore")
+        .decode("ascii")
+    )
+    slug = re.sub(r"\s+", "-", ascii_city.strip().lower())
+    return quote(slug, safe="")
 
 
 def split_csv(value: str) -> list[str]:
@@ -56,7 +64,9 @@ def get_provider_url(provider: str, city: str) -> str | None:
     template = env_url or BUILTIN_CUSTOM_URLS.get(provider)
     if not template:
         return None
-    return template.format(city=encode_city(city))
+    if "{city}" not in template:
+        raise ValueError(f"URL template for provider '{provider}' must include {{city}}")
+    return template.replace("{city}", encode_city(city))
 
 
 def get_extractor_order(provider: str) -> list[str]:
@@ -71,13 +81,10 @@ def extract_jina(url: str) -> str | None:
     if requests is None:
         return None
     api_key = os.getenv("JINA_API_KEY")
-    if not api_key:
-        return None
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Accept": "text/plain",
-    }
+    headers = {"Accept": "text/plain"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
     reader_url = f"https://r.jina.ai/{url}"
     for attempt in range(RETRY_COUNT):
         try:
@@ -138,7 +145,7 @@ def fetch_wttr(location: str) -> dict:
             "provider": "wttr",
             "location": location,
         }
-    url = f"https://wttr.in/{encode_city(location)}?format=j1"
+    url = f"https://wttr.in/{quote(location.strip(), safe='')}?format=j1"
     try:
         response = requests.get(url, headers={"User-Agent": "curl"}, timeout=TIMEOUT)
         response.raise_for_status()
@@ -153,7 +160,14 @@ def fetch_wttr(location: str) -> dict:
 
 def fetch_custom(provider: str, location: str) -> dict:
     requests, dependency_error = get_requests()
-    url = get_provider_url(provider, location)
+    try:
+        url = get_provider_url(provider, location)
+    except ValueError as exc:
+        return {
+            "error": str(exc),
+            "provider": provider,
+            "location": location,
+        }
     if not url:
         return {
             "error": "Unknown provider",
@@ -200,6 +214,11 @@ def parse_args() -> argparse.Namespace:
         default=os.getenv("SKILL_WEATHER_PROVIDER", DEFAULT_PROVIDER),
         help="Provider name (default: SKILL_WEATHER_PROVIDER or meteoam)",
     )
+    parser.add_argument(
+        "--no-fallback",
+        action="store_true",
+        help="Do not fall back to wttr.in when the selected provider fails",
+    )
     return parser.parse_args()
 
 
@@ -207,14 +226,21 @@ def main() -> int:
     args = parse_args()
     provider = args.provider.lower()
 
-    if provider == "wttr":
+    if provider == FALLBACK_PROVIDER:
         result = fetch_wttr(args.location)
     else:
         result = fetch_custom(provider, args.location)
+        if "error" in result and not args.no_fallback:
+            primary_error = result
+            result = fetch_wttr(args.location)
+            result["fallbackFrom"] = {
+                "provider": provider,
+                "error": primary_error["error"],
+            }
 
     json.dump(result, sys.stdout, ensure_ascii=True, indent=2)
     sys.stdout.write("\n")
-    return 0
+    return 1 if "error" in result else 0
 
 
 if __name__ == "__main__":
