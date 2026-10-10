@@ -11,11 +11,18 @@ metadata:
         "install":
           [
             {
-              "id": "apt",
-              "kind": "apt",
-              "packages": ["vdirsyncer", "khal"],
-              "bins": ["vdirsyncer", "khal"],
-              "label": "Install vdirsyncer + khal via apt",
+              "id": "uv-vdirsyncer",
+              "kind": "uv",
+              "package": "vdirsyncer",
+              "bins": ["vdirsyncer"],
+              "label": "Install vdirsyncer (uv)",
+            },
+            {
+              "id": "uv-khal",
+              "kind": "uv",
+              "package": "khal",
+              "bins": ["khal"],
+              "label": "Install khal (uv)",
             },
           ],
       },
@@ -31,15 +38,34 @@ This skill uses `SKILL_ICLOUD_CAL_*` environment variables for configuration.
 - `SKILL_ICLOUD_CAL_VDIRSYNCER_CONFIG_PATH` is required.
 - `SKILL_ICLOUD_CAL_KHAL_CONFIG_PATH` is required.
 - `SKILL_ICLOUD_CAL_PROFILE` is required.
+- `SKILL_ICLOUD_CAL_STORAGE_PATH` is required only for deleting events: the local root directory of the vdirsyncer `filesystem` storage (the `path` of the khal calendars).
 - Scope: all calendars exposed through the configured iCloud-backed profile.
 
-## Sync First
+## Safety
 
-Always sync before querying and after mutations:
+This is the user's personal calendar. Ask for explicit confirmation, showing title, date and calendar, before creating, modifying or deleting any event. Read-only commands (`list`, `search`, `at`) need no confirmation.
+
+Never print or log the iCloud app-specific password. If a command fails, stop and report the error instead of retrying mutations.
+
+## Setup (once)
+
+Run only after the vdirsyncer config is created or when a calendar is added or removed in iCloud:
 
 ```bash
 ${SKILL_ICLOUD_CAL_VDIRSYNCER_BIN:-vdirsyncer} -c "$SKILL_ICLOUD_CAL_VDIRSYNCER_CONFIG_PATH" discover "$SKILL_ICLOUD_CAL_PROFILE"
+```
+
+`metasync` copies calendar metadata (colors, display names) and is only needed once after `discover`, and only if the vdirsyncer pair declares `metadata`:
+
+```bash
 ${SKILL_ICLOUD_CAL_VDIRSYNCER_BIN:-vdirsyncer} -c "$SKILL_ICLOUD_CAL_VDIRSYNCER_CONFIG_PATH" metasync "$SKILL_ICLOUD_CAL_PROFILE"
+```
+
+## Sync
+
+Sync before querying and after mutations. `discover` and `metasync` are not needed here:
+
+```bash
 ${SKILL_ICLOUD_CAL_VDIRSYNCER_BIN:-vdirsyncer} -c "$SKILL_ICLOUD_CAL_VDIRSYNCER_CONFIG_PATH" sync "$SKILL_ICLOUD_CAL_PROFILE"
 ```
 
@@ -75,9 +101,9 @@ After creating, sync to push changes:
 ${SKILL_ICLOUD_CAL_VDIRSYNCER_BIN:-vdirsyncer} -c "$SKILL_ICLOUD_CAL_VDIRSYNCER_CONFIG_PATH" sync "$SKILL_ICLOUD_CAL_PROFILE"
 ```
 
-## Edit Events (interactive)
+## Edit Events (interactive, humans only)
 
-`khal edit` is interactive and requires a TTY. Use tmux if automating.
+`khal edit` is interactive and requires a TTY; it has no non-interactive mode. Agents should not drive it. To change an event, delete it and create it again (see Delete Events and Create Events); this drops attendees, alarms and the original UID, so for events with attendees or recurrence ask the user to edit from an Apple client.
 
 ```bash
 ${SKILL_ICLOUD_CAL_KHAL_BIN:-khal} -c "$SKILL_ICLOUD_CAL_KHAL_CONFIG_PATH" edit "search term"
@@ -101,13 +127,30 @@ After editing, sync:
 ${SKILL_ICLOUD_CAL_VDIRSYNCER_BIN:-vdirsyncer} -c "$SKILL_ICLOUD_CAL_VDIRSYNCER_CONFIG_PATH" sync "$SKILL_ICLOUD_CAL_PROFILE"
 ```
 
-## Delete Events
+## Delete Events (non-interactive)
 
-Use `khal edit`, then press `D` to delete, then sync:
+khal has no non-interactive delete. Instead remove the event's `.ics` file from the local vdirsyncer storage; the next `sync` propagates the deletion to iCloud.
 
-```bash
-${SKILL_ICLOUD_CAL_VDIRSYNCER_BIN:-vdirsyncer} -c "$SKILL_ICLOUD_CAL_VDIRSYNCER_CONFIG_PATH" sync "$SKILL_ICLOUD_CAL_PROFILE"
-```
+1. Sync, then identify the event and its UID:
+
+   ```bash
+   ${SKILL_ICLOUD_CAL_KHAL_BIN:-khal} -c "$SKILL_ICLOUD_CAL_KHAL_CONFIG_PATH" list --format "{uid} | {start-date} {start-time} | {title} | {calendar}" today 30d
+   ```
+
+2. Locate the file. It must match exactly one file; if it matches none or several, stop:
+
+   ```bash
+   grep -rlF --include='*.ics' "UID:<uid>" "$SKILL_ICLOUD_CAL_STORAGE_PATH"
+   ```
+
+3. Confirm with the user. Deleting a recurring event removes the whole series.
+4. Delete that single file (prefer `trash` over `rm`), then sync:
+
+   ```bash
+   ${SKILL_ICLOUD_CAL_VDIRSYNCER_BIN:-vdirsyncer} -c "$SKILL_ICLOUD_CAL_VDIRSYNCER_CONFIG_PATH" sync "$SKILL_ICLOUD_CAL_PROFILE"
+   ```
+
+5. Verify the event is gone with `khal list`. Delete one file per confirmed request, and never pass `--force-delete` to `sync`: it only disables vdirsyncer's safeguard against a storage becoming completely empty, which is exactly the failure to catch here.
 
 ## Output Formats
 
