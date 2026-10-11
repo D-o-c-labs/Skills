@@ -12,9 +12,14 @@ from typing import Any, Callable
 from urllib.parse import quote
 
 BUILTIN_CUSTOM_URLS = {
-    "meteoam": "https://www.meteoam.it/it/meteo-citta/{city}",
     "3bmeteo": "https://www.3bmeteo.com/meteo/{city}",
 }
+METEOAM_CITY_URL = "https://www.meteoam.it/it/meteo-citta/{city}"
+METEOAM_FORECAST_URL = (
+    "https://api.meteoam.it/deda-meteograms/api/GetMeteogram/preset1/{lat},{lon}"
+)
+METEOAM_CITY_COORDS_RE = re.compile(r"var location_city_\d+\s*=\s*(\[.*?\]);")
+COORDS_RE = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$")
 DEFAULT_PROVIDER = "meteoam"
 DEFAULT_EXTRACTOR_ORDER = "jina,tavily"
 FALLBACK_PROVIDER = "wttr"
@@ -158,6 +163,51 @@ def fetch_wttr(location: str) -> dict:
     return success("wttr", location, url, response.text)
 
 
+def resolve_meteoam_coords(requests: Any, location: str) -> tuple[str, str]:
+    match = COORDS_RE.match(location)
+    if match:
+        return match.group(1), match.group(2)
+
+    # The city page is rendered client-side, but it embeds the coordinates
+    # that the page itself passes to the forecast API.
+    url = METEOAM_CITY_URL.replace("{city}", encode_city(location))
+    response = requests.get(url, headers={"User-Agent": "curl"}, timeout=TIMEOUT)
+    if response.status_code == 404:
+        raise ValueError(f"Unknown meteoam city: {url}")
+    response.raise_for_status()
+    match = METEOAM_CITY_COORDS_RE.search(response.text)
+    if not match:
+        raise ValueError(f"No coordinates found in meteoam city page: {url}")
+    cities = json.loads(match.group(1))
+    if not cities:
+        raise ValueError(f"No coordinates found in meteoam city page: {url}")
+    return str(cities[0]["lat"]), str(cities[0]["lon"])
+
+
+def fetch_meteoam(location: str) -> dict:
+    requests, dependency_error = get_requests()
+    if requests is None:
+        return {
+            "error": dependency_error,
+            "provider": "meteoam",
+            "location": location,
+        }
+    try:
+        lat, lon = resolve_meteoam_coords(requests, location)
+        url = METEOAM_FORECAST_URL.format(lat=lat, lon=lon)
+        response = requests.get(url, headers={"User-Agent": "curl"}, timeout=TIMEOUT)
+        response.raise_for_status()
+    except (requests.RequestException, ValueError, KeyError) as exc:
+        return {
+            "error": f"meteoam request failed: {exc}",
+            "provider": "meteoam",
+            "location": location,
+        }
+    result = success("meteoam", location, url, response.text)
+    result["coordinates"] = {"lat": float(lat), "lon": float(lon)}
+    return result
+
+
 def fetch_custom(provider: str, location: str) -> dict:
     requests, dependency_error = get_requests()
     try:
@@ -229,7 +279,10 @@ def main() -> int:
     if provider == FALLBACK_PROVIDER:
         result = fetch_wttr(args.location)
     else:
-        result = fetch_custom(provider, args.location)
+        if provider == "meteoam" and not os.getenv("SKILL_WEATHER_CUSTOM_METEOAM_URL"):
+            result = fetch_meteoam(args.location)
+        else:
+            result = fetch_custom(provider, args.location)
         if "error" in result and not args.no_fallback:
             primary_error = result
             result = fetch_wttr(args.location)
