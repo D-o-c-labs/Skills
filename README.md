@@ -22,11 +22,11 @@ Path: `skills/weather/SKILL.md`
 | `JINA_API_KEY` | no | none | Shared credential for the Jina Reader extractor; Jina works without it (rate-limited) |
 | `TAVILY_API_KEY` | no | none | Shared credential for the Tavily Extract extractor; skipped when unset |
 
-No credentials are required. If a URL-template provider fails, the skill falls back to `wttr` (disable with `--no-fallback`).
+No credentials are required. If `meteoam` or a URL-template provider fails, the skill falls back to `wttr` (disable with `--no-fallback`).
 
 Built-in providers:
 
-- `meteoam` -> `https://www.meteoam.it/it/meteo-citta/{city}`
+- `meteoam` -> `https://api.meteoam.it/deda-meteograms/api/GetMeteogram/preset1/{lat},{lon}` (city names resolved via `https://www.meteoam.it/it/meteo-citta/{city}`)
 - `3bmeteo` -> `https://www.3bmeteo.com/meteo/{city}`
 - `wttr` -> `https://wttr.in/{city}?format=j1`
 
